@@ -1,0 +1,19 @@
+# Virtual environment
+nps/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Data files
+data/
+*.csv
+*.pkl
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,112 @@
+
+VERIFICATION OF STEPS FOR OF node.py
+
+Step 3 — Verify the file runs without errors
+Open a terminal in VS Code and run:
+python node.py --id 1
+You should see:
+[Node 1] Started on port 5001 | Neighbours: [2, 3]
+If you see an error like ModuleNotFoundError, check that Python is installed correctly and PATH is set. If you see Address already in use, another script is already using that port — restart VS Code.
+
+Step 4 — Open split terminals
+In VS Code:
+
+Click Terminal → New Terminal
+Click the Split Terminal button (the icon with a plus and a split square, top right of terminal panel) repeatedly until you have 8 terminals side by side
+
+Label them mentally as Node 1 through Node 8.
+
+Step 5 — Run all 8 nodes
+Run one command per terminal in this order:
+# Terminal 1
+python node.py --id 1
+
+# Terminal 2
+python node.py --id 2
+
+# Terminal 3
+python node.py --id 3
+
+# Terminal 4
+python node.py --id 4
+
+# Terminal 5
+python node.py --id 5
+
+# Terminal 6
+python node.py --id 6
+
+# Terminal 7
+python node.py --id 7
+
+# Terminal 8
+python node.py --id 8
+Wait 3–4 seconds after starting all nodes.
+
+Step 6 — Verify heartbeats are being sent and received
+You should see output like this across terminals:
+Node 1 terminal:
+[Node 1] Started on port 5001 | Neighbours: [2, 3]
+Node 2 terminal (receiving from Node 1):
+[Node 2] Started on port 5002 | Neighbours: [1, 4, 5]
+No errors means heartbeats are flowing correctly through UDP sockets and HMAC signatures are being verified successfully.
+
+Step 7 — Test HMAC rejection
+Open a new terminal and run this one-liner to send a fake unsigned heartbeat to Node 1:
+pythonpython -c "
+import socket, json
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+fake = {'type':'HEARTBEAT','node_id':99,'seq':1,'battery':100,'packet_loss':0,'timestamp':1234567890,'signature':'fakesignature'}
+sock.sendto(json.dumps(fake).encode(), ('127.0.0.1', 5001))
+print('Fake packet sent')
+"
+In Node 1's terminal you should immediately see:
+[Node 1] REJECTED: Invalid signature from node 99
+This confirms HMAC authentication is working correctly.
+
+Step 8 — Test replay attack rejection
+Run this to send the same packet twice with the same sequence number:
+pythonpython -c "
+import socket, json, hmac, hashlib
+SHARED_KEY = b'wsn_secret_key'
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+payload = {'type':'HEARTBEAT','node_id':2,'seq':0,'battery':100,'packet_loss':5,'timestamp':1234567890}
+msg = json.dumps(payload, sort_keys=True).encode()
+payload['signature'] = hmac.new(SHARED_KEY, msg, hashlib.sha256).hexdigest()
+
+# Send the same packet twice
+sock.sendto(json.dumps(payload).encode(), ('127.0.0.1', 5001))
+sock.sendto(json.dumps(payload).encode(), ('127.0.0.1', 5001))
+print('Replay packets sent')
+"
+Node 1 terminal should show:
+[Node 1] REJECTED: Replay from node 2
+on the second packet, confirming replay prevention works.
+
+Step 9 — Test fault detection
+With all 8 nodes running, go to Terminal 4 (Node 4) and press Ctrl+C to kill it.
+Wait 6 seconds. In Node 2's terminal (which has Node 4 as a neighbour) you should see:
+[Node 2] Node 4 UNREACHABLE — broadcasting RERR
+And in Node 6's terminal (another neighbour of Node 4):
+[Node 6] RERR received — Node 4 reported unreachable
+This confirms fault detection and RERR broadcasting are working end to end.
+
+Step 10 — Test degradation simulation
+Stop all nodes with Ctrl+C. Restart Node 4 with the degrade flag:
+python node.py --id 4 --degrade
+You should see Node 4 printing:
+[Node 4] Degrading — Battery: 99%  Loss: 2%
+[Node 4] Degrading — Battery: 98%  Loss: 4%
+[Node 4] Degrading — Battery: 97%  Loss: 6%
+This simulates a dying node and will be used in Phase 3 to generate pre-failure training data for the Random Forest model.
+
+Phase 1 is complete when:
+
+All 8 nodes start without errors ✔
+Heartbeats flow between neighbours over UDP ✔
+Unsigned packets are rejected with HMAC error ✔
+Replayed packets are rejected with sequence number check ✔
+Killing a node triggers UNREACHABLE detection within 6 seconds ✔
+RERR packets propagate to neighbours of the failed node ✔
+Degradation simulation runs and prints declining metrics ✔
