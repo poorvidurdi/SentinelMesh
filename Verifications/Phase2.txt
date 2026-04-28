@@ -1,0 +1,67 @@
+Phase 2 Verification — Complete Steps
+
+Verification 1 — Normal routing table for all nodes
+Start all 8 nodes and collect the initial next hop printed by each. Expected:
+Node    Expected next hop
+1       Node 2
+2       Node 4
+3       Node 5
+4       Node 6
+5       Node 7
+6       Node 8
+7       Node 8
+8       None (sink)
+If all 8 match, normal routing is verified.
+
+Verification 2 — RERR propagation
+With all 8 nodes running, kill Node 4 (Ctrl+C on Terminal 4).
+Within 6 seconds check these terminals:
+Node 2 should show:
+[Node 2] Node 4 UNREACHABLE — broadcasting RERR
+[Node 2] Rerouted — new next hop to sink: Node 5
+Node 1 should show:
+[Node 1] RERR received — Node 4 reported unreachable
+[Node 1] Route updated — new next hop to sink: Node 3
+Node 6 should show:
+[Node 6] Node 4 UNREACHABLE — broadcasting RERR
+[Node 6] Rerouted — new next hop to sink: Node 8
+
+Verification 3 — HMAC on RERR packets
+Send a fake unsigned RERR to Node 2:
+pythonpython -c "
+import socket, json
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+fake = {
+    'type': 'RERR',
+    'from': 99,
+    'failed_node': 5,
+    'timestamp': 1234567890,
+    'signature': 'fakesignature'
+}
+sock.sendto(json.dumps(fake).encode(), ('127.0.0.1', 5002))
+print('Fake RERR sent')
+"
+Node 2 terminal should show:
+[Node 2] REJECTED: Invalid signature from node None
+Node 2 must NOT update its routing table. This confirms HMAC protects control packets including RERR, not just heartbeats.
+
+Verification 4 — Multiple node failures
+With all 8 nodes running, kill both Node 4 and Node 7 (Ctrl+C on Terminals 4 and 7).
+Node 5 should reroute:
+[Node 5] Node 7 UNREACHABLE — broadcasting RERR
+[Node 5] Rerouted — new next hop to sink: Node 2
+Node 2 should reroute away from Node 4:
+[Node 2] Node 4 UNREACHABLE — broadcasting RERR
+[Node 2] Rerouted — new next hop to sink: Node 5
+This verifies Bellman-Ford handles multiple simultaneous failures correctly.
+
+Verification 5 — Recovery restores route
+After Verification 2, restart Node 4:
+python node.py --id 4
+Within 4 seconds Node 2 should show:
+[Node 2] Node 4 recovered — route restored: next hop Node 4
+This confirms the recovery mechanism and seq_table reset work correctly.
+
+Verification 6 — Routing stability under no failures
+Run all 8 nodes for 2 minutes without killing any. Check that no node prints any UNREACHABLE, RERR, or reroute messages during this period. Only heartbeat traffic should be flowing silently.
+This confirms the fault detection threshold is not triggering false positives under normal conditions.

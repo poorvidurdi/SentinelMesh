@@ -6,16 +6,20 @@ import time
 import json
 import argparse
 import random
+import copy
+
+from router import get_next_hop, TOPOLOGY, remove_node
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SHARED_KEY = b"wsn_secret_key"
-MONITOR_PORT = 9999          # monitor.py listens here
-HEARTBEAT_INTERVAL = 2       # seconds between heartbeats
-FAULT_CHECK_INTERVAL = 5     # seconds between fault checks
-UNREACHABLE_TIMEOUT = 6      # seconds before a neighbour is declared dead
+MONITOR_PORT = 9999
+HEARTBEAT_INTERVAL = 2
+FAULT_CHECK_INTERVAL = 5
+UNREACHABLE_TIMEOUT = 6
 
-# Network topology: node_id → list of (neighbour_id, neighbour_port)
-TOPOLOGY = {
+# Separate neighbour port map — only used for sending UDP packets
+# Format: node_id → list of (neighbour_id, port)
+NEIGHBOUR_PORTS = {
     1: [(2, 5002), (3, 5003)],
     2: [(1, 5001), (4, 5004), (5, 5005)],
     3: [(1, 5001), (5, 5005)],
@@ -23,7 +27,7 @@ TOPOLOGY = {
     5: [(2, 5002), (3, 5003), (7, 5007)],
     6: [(4, 5004), (8, 5008)],
     7: [(5, 5005), (8, 5008)],
-    8: []  # sink node
+    8: []
 }
 
 # ── HMAC Signing ──────────────────────────────────────────────────────────────
@@ -80,7 +84,7 @@ def send_heartbeats(sock, node_id, neighbours, battery_ref, packet_loss_ref, seq
         time.sleep(HEARTBEAT_INTERVAL)
 
 # ── Heartbeat Listener ────────────────────────────────────────────────────────
-def listen(port, node_id, neighbour_table, seq_table, unreachable_set):
+def listen(port, node_id, neighbour_table, seq_table, unreachable_set, failed_nodes):
     # Dedicated receiving socket — separate from sender
     recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     recv_sock.bind(("127.0.0.1", port))
@@ -108,12 +112,27 @@ def listen(port, node_id, neighbour_table, seq_table, unreachable_set):
                     "packet_loss": packet["packet_loss"],
                     "last_seen": time.time()
                 }
-                unreachable_set.discard(nid)
+                if nid in unreachable_set:
+                    unreachable_set.discard(nid)
+                    seq_table.pop(nid, None)  # reset seq so restarted node is accepted
+                    failed_nodes.discard(nid)
+                    # Recalculate route without the recovered node in failed list
+                    new_topology = copy.deepcopy(TOPOLOGY)
+                    new_hop = get_next_hop(new_topology, node_id, failed_nodes=failed_nodes)
+                    print(f"[Node {node_id}] Node {nid} recovered — route restored: next hop Node {new_hop}")
+                else:
+                    unreachable_set.discard(nid)
 
             elif ptype == "RERR":
                 failed = packet.get("failed_node")
                 print(f"[Node {node_id}] RERR received — Node {failed} reported unreachable")
                 unreachable_set.add(failed)
+                failed_nodes.add(failed)
+
+                # Recalculate route
+                new_topology = copy.deepcopy(TOPOLOGY)
+                new_hop = get_next_hop(new_topology, node_id, failed_nodes=failed_nodes)
+                print(f"[Node {node_id}] Route updated — new next hop to sink: Node {new_hop}")
 
         except socket.timeout:
             pass  # Normal — just means no packet arrived in this window
@@ -126,7 +145,7 @@ def listen(port, node_id, neighbour_table, seq_table, unreachable_set):
             print(f"[Node {node_id}] Listen error: {e}")
 
 # ── Fault Detector ────────────────────────────────────────────────────────────
-def detect_faults(sock, node_id, neighbours, neighbour_table, unreachable_set):
+def detect_faults(sock, node_id, neighbours, neighbour_table, unreachable_set, failed_nodes):
     while True:
         time.sleep(FAULT_CHECK_INTERVAL)
         for nid, info in list(neighbour_table.items()):
@@ -135,6 +154,10 @@ def detect_faults(sock, node_id, neighbours, neighbour_table, unreachable_set):
                     print(f"[Node {node_id}] Node {nid} UNREACHABLE — broadcasting RERR")
                     unreachable_set.add(nid)
                     broadcast_rerr(sock, node_id, nid, neighbours)
+                    failed_nodes.add(nid)
+                    new_topology = copy.deepcopy(TOPOLOGY)
+                    new_hop = get_next_hop(new_topology, node_id, failed_nodes=failed_nodes)
+                    print(f"[Node {node_id}] Rerouted — new next hop to sink: Node {new_hop}")
 
 # ── Simulate Degradation (for training data generation) ───────────────────────
 def degrade(battery_ref, packet_loss_ref, node_id, degrade_flag):
@@ -154,7 +177,7 @@ def main():
 
     node_id = args.id
     port = 5000 + node_id
-    neighbours = TOPOLOGY.get(node_id, [])
+    neighbours = NEIGHBOUR_PORTS.get(node_id, [])
 
     # Shared mutable state (using lists so threads can modify them)
     battery_ref = [100]
@@ -163,6 +186,11 @@ def main():
     neighbour_table = {}
     seq_table = {}
     unreachable_set = set()
+    failed_nodes = set()
+
+    current_topology = copy.deepcopy(TOPOLOGY)
+    next_hop = get_next_hop(current_topology, node_id)
+    print(f"[Node {node_id}] Initial next hop to sink: Node {next_hop}")
 
     # Single shared socket for sending and receiving
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -176,10 +204,10 @@ def main():
                          args=(sock, node_id, neighbours, battery_ref, packet_loss_ref, seq_ref),
                          daemon=True),
         threading.Thread(target=listen,
-                         args=(port, node_id, neighbour_table, seq_table, unreachable_set),
+                         args=(port, node_id, neighbour_table, seq_table, unreachable_set, failed_nodes),
                          daemon=True),
         threading.Thread(target=detect_faults,
-                         args=(sock, node_id, neighbours, neighbour_table, unreachable_set),
+                         args=(sock, node_id, neighbours, neighbour_table, unreachable_set, failed_nodes),
                          daemon=True),
     ]
 
