@@ -5,22 +5,20 @@ import os
 import time
 import threading
 import pickle
-from turtle import pd
 import numpy as np
-from sklearn import metrics
 import pandas as pd
-import subprocess
 
 MONITOR_PORT = 9999
 METRICS_FILE = "data/metrics.csv"
 MODEL_FILE = "model.pkl"
-PREDICTION_INTERVAL = 5       # seconds between predictions
-FAILURE_THRESHOLD = 0.75      # probability above which node is flagged
+PREDICTION_INTERVAL = 5
+FAILURE_THRESHOLD = 0.75
+DASHBOARD_PORT = 9998
 
 # Shared state
-node_metrics = {}             # node_id → latest metrics
-node_status = {}              # node_id → "healthy" / "at_risk" / "failed"
-model = None                  # loaded after training
+node_metrics = {}
+node_status = {}
+model = None
 
 # ── CSV Setup ─────────────────────────────────────────────────────────────────
 def setup_csv():
@@ -53,13 +51,11 @@ def collect_metrics():
                 packet_loss = packet["packet_loss"]
                 timestamp = packet["timestamp"]
 
-                # Determine label based on metrics
                 if battery < 20 or packet_loss > 60:
                     label = "pre_failure"
                 else:
                     label = "healthy"
 
-                # Update shared state
                 node_metrics[nid] = {
                     "battery": battery,
                     "packet_loss": packet_loss,
@@ -67,7 +63,6 @@ def collect_metrics():
                     "label": label
                 }
 
-                # Write to CSV
                 writer.writerow([nid, battery, packet_loss, timestamp, label])
                 f.flush()
 
@@ -76,17 +71,12 @@ def collect_metrics():
             except Exception as e:
                 print(f"[Monitor] Collect error: {e}")
 
+# ── Trigger Reroute ───────────────────────────────────────────────────────────
 def trigger_reroute(node_id):
-    """
-    Notify all neighbours of at-risk node to preemptively reroute.
-    Sends a signed RERR on behalf of the at-risk node.
-    """
     import hmac as hmac_lib
     import hashlib
 
     SHARED_KEY = b"wsn_secret_key"
-
-    # Neighbour ports of each node
     NEIGHBOUR_PORTS = {
         1: [5002, 5003],
         2: [5001, 5004, 5005],
@@ -100,7 +90,7 @@ def trigger_reroute(node_id):
 
     payload = {
         "type": "RERR",
-        "from": 0,             # 0 = monitor
+        "from": 0,
         "failed_node": node_id,
         "timestamp": time.time()
     }
@@ -112,6 +102,23 @@ def trigger_reroute(node_id):
     for port in NEIGHBOUR_PORTS.get(node_id, []):
         sock.sendto(signed_msg, ("127.0.0.1", port))
     print(f"[Monitor] ⚡ Preemptive RERR sent for Node {node_id} — neighbours notified")
+
+# ── Send to Dashboard ─────────────────────────────────────────────────────────
+def send_to_dashboard(node_id, status, battery, packet_loss, prob):
+    update = {
+        "node_id": node_id,
+        "status": status,
+        "battery": battery,
+        "packet_loss": packet_loss,
+        "prob": round(prob, 2)
+    }
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.sendto(json.dumps(update).encode(), ("127.0.0.1", DASHBOARD_PORT))
+    except Exception as e:
+        print(f"[Monitor] Dashboard send error: {e}")
+    finally:
+        sock.close()
 
 # ── Live Prediction ───────────────────────────────────────────────────────────
 def run_predictions():
@@ -133,8 +140,10 @@ def run_predictions():
 
         print("\n[Monitor] ── Prediction Report ──────────────────")
         for nid, metrics in node_metrics.items():
-            features = pd.DataFrame([[metrics["battery"], metrics["packet_loss"]]], 
-                         columns=["battery", "packet_loss"])
+            features = pd.DataFrame(
+                [[metrics["battery"], metrics["packet_loss"]]],
+                columns=["battery", "packet_loss"]
+            )
             prob = model.predict_proba(features)[0][1]
 
             if prob > FAILURE_THRESHOLD:
@@ -146,6 +155,22 @@ def run_predictions():
                 print(f"  Node {nid} → ✔ Healthy  | Battery: {metrics['battery']}% | Loss: {metrics['packet_loss']}% | Prob: {prob:.2f}")
 
             node_status[nid] = status
+            send_to_dashboard(nid, status, metrics["battery"], metrics["packet_loss"], prob)
+
+        # ── Failed node detection — inside while True loop ────────────────
+        for nid in list(node_metrics.keys()):
+            last_seen = node_metrics[nid].get("timestamp", 0)
+            if time.time() - last_seen > 10:
+                if node_status.get(nid) != "failed":
+                    node_status[nid] = "failed"
+                    send_to_dashboard(
+                        nid, "failed",
+                        node_metrics[nid]["battery"],
+                        node_metrics[nid]["packet_loss"],
+                        1.0
+                    )
+                    print(f"[Monitor] Node {nid} marked FAILED — no heartbeat for 10s")
+
         print("[Monitor] ─────────────────────────────────────────\n")
 
 # ── Main ──────────────────────────────────────────────────────────────────────

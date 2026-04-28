@@ -1,0 +1,20 @@
+Phase 4 Verification Summary
+
+Verification 1 — Dashboard opens correctly
+Run python dashboard.py alone with no nodes. Window should open with dark background showing all 8 nodes in grey connected by blue edges. No errors in terminal.
+
+Verification 2 — Nodes turn green on startup
+Start monitor and all 8 nodes normally. Within 5 seconds all nodes on dashboard should turn green with battery and loss metrics visible below each node.
+
+Verification 3 — AT RISK turns amber
+With everything running, start python node.py --id 4 --degrade. Watch dashboard — Node 4 should gradually show declining metrics and turn amber when battery hits ~64% and loss crosses 72%. All other nodes must stay green.
+
+Verification 4 — Failed node turns red
+After Node 4 is amber, press Ctrl+C on Node 4's terminal. Within 10 seconds Node 4 and its connecting edges should turn red on the dashboard. Monitor terminal should print:
+[Monitor] Node 4 marked FAILED — no heartbeat for 10s
+
+Verification 5 — Recovery turns green
+Restart Node 4 normally with python node.py --id 4. Within 5 seconds Node 4 should return to green on the dashboard.
+
+Verification 6 — Timestamp updates
+Bottom right corner of dashboard should show a new timestamp every 2 seconds confirming live updates are flowing.
