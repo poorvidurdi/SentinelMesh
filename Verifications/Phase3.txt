@@ -1,0 +1,64 @@
+Phase 3 Verification — Complete Steps
+
+Verification 1 — CSV contains both labels
+pythonpython -c "
+import pandas as pd
+df = pd.read_csv('data/metrics.csv')
+print('Total rows:', len(df))
+print(df['label'].value_counts())
+print()
+print('Battery range for pre_failure:')
+print(df[df['label']=='pre_failure']['battery'].describe())
+print()
+print('Packet loss range for pre_failure:')
+print(df[df['label']=='pre_failure']['packet_loss'].describe())
+"
+Expected: both labels present, pre_failure rows show battery below 20 and packet loss above 60.
+
+Verification 2 — Model evaluation scores
+pythonpython -c "
+import pandas as pd, pickle
+from sklearn.metrics import classification_report, accuracy_score
+from sklearn.model_selection import train_test_split
+
+df = pd.read_csv('data/metrics.csv')
+X = df[['battery', 'packet_loss']]
+y = df['label']
+
+with open('model.pkl', 'rb') as f:
+    model = pickle.load(f)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+y_pred = model.predict(X_test)
+
+print('Accuracy:', accuracy_score(y_test, y_pred))
+print(classification_report(y_test, y_pred))
+"
+Expected: accuracy above 0.90, pre_failure recall above 0.80.
+
+Verification 3 — No false positives on healthy nodes
+Start monitor and all 8 nodes normally without any degrade flag:
+python monitor.py
+python node.py --id 1
+python node.py --id 2
+...
+python node.py --id 8
+Run for 2 minutes. Every prediction report must show all nodes as Healthy with Prob: 0.00. Any AT RISK flag during this run is a false positive and means the model needs retraining with more healthy data.
+
+Verification 4 — Degradation detection timing
+Start all nodes with Node 4 degrading. Record exactly which report number Node 4 first shows AT RISK and what its battery and packet loss values were at that moment.
+Expected: AT RISK triggered around battery 60–70% and packet loss 60–70%, which means the model caught it well before total failure (battery 0%, loss 100%).
+This timing gap is your preemptive window — the key metric that proves your system is proactive not reactive. Note this down for your report.
+
+Verification 5 — Preemptive RERR confirmed in node terminals
+While running Verification 4, check Node 2 and Node 6 terminals the moment Node 4 is flagged AT RISK. You must see:
+Node 2:
+[Node 2] RERR received — Node 4 reported unreachable
+[Node 2] Route updated — new next hop to sink: Node 5
+Node 6:
+[Node 6] RERR received — Node 4 reported unreachable
+[Node 6] Route updated — new next hop to sink: Node 8
+This confirms the monitor successfully sent the preemptive RERR and nodes rerouted before Node 4 actually died.
+
+Verification 6 — No AT RISK on non-degrading nodes during degradation run
+During the same run as Verification 4, confirm that nodes 1, 2, 3, 5, 6, 7, 8 all remain Healthy with Prob: 0.00 throughout. Only Node 4 should ever show AT RISK.
