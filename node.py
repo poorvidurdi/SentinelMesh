@@ -7,6 +7,8 @@ import json
 import argparse
 import random
 import copy
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
 
 from router import get_next_hop, TOPOLOGY, remove_node
 

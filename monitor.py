@@ -7,6 +7,8 @@ import threading
 import pickle
 import numpy as np
 import pandas as pd
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
 
 MONITOR_PORT = 9999
 METRICS_FILE = "data/metrics.csv"
