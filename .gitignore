@@ -11,9 +11,15 @@ data/
 *.csv
 *.pkl
 
+# Environment variables
+.env
+
 # VS Code
 .vscode/
 
 # OS files
 .DS_Store
 Thumbs.db
+
+# Logs
+*.log

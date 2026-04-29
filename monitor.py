@@ -72,36 +72,29 @@ def collect_metrics():
                 print(f"[Monitor] Collect error: {e}")
 
 # ── Trigger Reroute ───────────────────────────────────────────────────────────
-def trigger_reroute(node_id):
+def trigger_reroute(node_id, prob):
     import hmac as hmac_lib
     import hashlib
+    from router import get_neighbour_ports
 
     SHARED_KEY = b"wsn_secret_key"
-    NEIGHBOUR_PORTS = {
-        1: [5002, 5003],
-        2: [5001, 5004, 5005],
-        3: [5001, 5005],
-        4: [5002, 5006],
-        5: [5002, 5003, 5007],
-        6: [5004, 5008],
-        7: [5005, 5008],
-        8: []
-    }
+    neighbour_ports = get_neighbour_ports(node_id)
 
     payload = {
-        "type": "RERR",
+        "type": "RISK_UPDATE",
         "from": 0,
-        "failed_node": node_id,
-        "timestamp": time.time()
+        "node_id": node_id,
+        "risk": round(prob, 4),
+        "seq": int(time.time() * 1000)
     }
     msg = json.dumps(payload, sort_keys=True).encode()
     payload["signature"] = hmac_lib.new(SHARED_KEY, msg, hashlib.sha256).hexdigest()
     signed_msg = json.dumps(payload).encode()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    for port in NEIGHBOUR_PORTS.get(node_id, []):
+    for port in neighbour_ports:
         sock.sendto(signed_msg, ("127.0.0.1", port))
-    print(f"[Monitor] ⚡ Preemptive RERR sent for Node {node_id} — neighbours notified")
+    print(f"[Monitor] ⚡ Preemptive RISK_UPDATE sent for Node {node_id} — risk {prob:.2f}")
 
 # ── Send to Dashboard ─────────────────────────────────────────────────────────
 def send_to_dashboard(node_id, status, battery, packet_loss, prob):
@@ -149,7 +142,7 @@ def run_predictions():
             if prob > FAILURE_THRESHOLD:
                 status = "at_risk"
                 print(f"  Node {nid} → ⚠ AT RISK  | Battery: {metrics['battery']}% | Loss: {metrics['packet_loss']}% | Prob: {prob:.2f}")
-                trigger_reroute(nid)
+                trigger_reroute(nid, prob)
             else:
                 status = "healthy"
                 print(f"  Node {nid} → ✔ Healthy  | Battery: {metrics['battery']}% | Loss: {metrics['packet_loss']}% | Prob: {prob:.2f}")

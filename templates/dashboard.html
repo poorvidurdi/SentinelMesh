@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SentinelMesh — IIoT WSN Monitor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#050f1a;--panel:#081828;--card:#0a1f35;--border:#0e3a5a;
+  --accent:#00d4ff;--accent2:#00ff9f;--warn:#ffab00;--danger:#ff3b3b;
+  --healthy:#00e676;--text:#cce8f4;--muted:#4a7a96;
+  --mono:'JetBrains Mono',monospace;--display:'Rajdhani',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--display);
+  height:100vh;overflow:hidden;display:grid;
+  grid-template-rows:56px 1fr;grid-template-columns:1fr;}
+
+/* TOPBAR */
+.topbar{background:linear-gradient(90deg,#040e18,#071a2e);
+  border-bottom:1px solid var(--border);display:flex;align-items:center;
+  padding:0 20px;gap:20px;z-index:10;}
+.logo{font-family:var(--display);font-size:20px;font-weight:700;
+  color:var(--accent);letter-spacing:2px;white-space:nowrap;display:flex;
+  align-items:center;gap:8px;}
+.logo span{color:var(--text);font-weight:400;font-size:12px;letter-spacing:0;}
+.stat-pills{display:flex;gap:10px;flex:1;overflow:hidden;}
+.stat-pill{background:var(--card);border:1px solid var(--border);
+  border-radius:6px;padding:3px 12px;display:flex;flex-direction:column;
+  align-items:center;min-width:80px;}
+.stat-pill .val{font-family:var(--mono);font-size:15px;font-weight:700;
+  color:var(--accent);line-height:1.2;}
+.stat-pill .lbl{font-size:8px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;}
+.live-badge{background:var(--danger);color:white;font-size:10px;font-weight:700;
+  padding:3px 8px;border-radius:4px;letter-spacing:1px;
+  animation:pulse-b 1.5s infinite;}
+@keyframes pulse-b{0%,100%{opacity:1;}50%{opacity:0.5;}}
+
+/* MAIN */
+.main{display:grid;grid-template-columns:1fr 310px;
+  grid-template-rows:1fr 210px;gap:8px;padding:8px;overflow:hidden;}
+
+/* NETWORK */
+.net-panel{grid-row:1;grid-column:1;background:var(--panel);
+  border:1px solid var(--border);border-radius:10px;position:relative;overflow:hidden;}
+.net-panel::before{content:'';position:absolute;inset:0;
+  background:repeating-linear-gradient(0deg,transparent,transparent 39px,rgba(14,58,90,.35) 40px),
+  repeating-linear-gradient(90deg,transparent,transparent 39px,rgba(14,58,90,.35) 40px);
+  pointer-events:none;}
+#net-svg{width:100%;height:100%;}
+.net-lbl{position:absolute;top:12px;left:16px;font-size:13px;font-weight:700;
+  color:var(--accent);letter-spacing:2px;text-transform:uppercase;}
+.net-sub{position:absolute;top:30px;left:16px;font-size:10px;color:var(--muted);letter-spacing:1px;}
+.legend{position:absolute;bottom:10px;left:12px;display:flex;gap:12px;
+  background:rgba(8,24,40,.85);border:1px solid var(--border);
+  border-radius:6px;padding:5px 12px;}
+.leg-i{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--muted);}
+.leg-d{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+
+/* RIGHT */
+.right-panel{grid-row:1/3;grid-column:2;display:flex;flex-direction:column;gap:8px;overflow:hidden;}
+
+.ml-panel{background:var(--panel);border:1px solid var(--border);
+  border-radius:10px;padding:12px;flex-shrink:0;}
+.panel-title{font-size:10px;font-weight:700;color:var(--accent);letter-spacing:2px;
+  text-transform:uppercase;margin-bottom:8px;display:flex;align-items:center;gap:6px;}
+.panel-title::before{content:'';width:3px;height:12px;background:var(--accent);
+  border-radius:2px;display:inline-block;}
+.ml-row{display:flex;align-items:center;gap:6px;margin-bottom:5px;}
+.ml-lbl{font-family:var(--mono);font-size:10px;color:var(--muted);width:28px;text-align:right;flex-shrink:0;}
+.ml-bg{flex:1;height:9px;background:rgba(14,58,90,.6);border-radius:5px;overflow:hidden;}
+.ml-fill{height:100%;border-radius:5px;transition:width .5s ease,background .4s;background:var(--healthy);}
+.ml-fill.warn{background:var(--warn);}
+.ml-fill.crit{background:var(--danger);}
+.ml-pct{font-family:var(--mono);font-size:10px;width:32px;text-align:right;color:var(--text);flex-shrink:0;}
+
+.feeds-panel{background:var(--panel);border:1px solid var(--border);
+  border-radius:10px;padding:12px;flex:1;overflow:hidden;display:flex;flex-direction:column;}
+.feed-tabs{display:flex;gap:4px;margin-bottom:8px;flex-shrink:0;}
+.feed-tab{padding:4px 10px;font-size:10px;font-weight:700;letter-spacing:1px;
+  text-transform:uppercase;border-radius:4px;cursor:pointer;color:var(--muted);
+  background:transparent;border:1px solid transparent;transition:all .2s;}
+.feed-tab.active{background:var(--card);border-color:var(--border);color:var(--accent);}
+.feed-content{flex:1;overflow-y:auto;display:none;}
+.feed-content.active{display:block;}
+.feed-content::-webkit-scrollbar{width:3px;}
+.feed-content::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+.feed-item{font-family:var(--mono);font-size:10px;padding:3px 0;
+  border-bottom:1px solid rgba(14,58,90,.4);display:grid;
+  grid-template-columns:52px 72px 1fr;gap:4px;align-items:start;line-height:1.4;}
+.feed-ts{color:var(--muted);}
+.feed-type{font-weight:700;}
+.feed-detail{color:#8ab4c8;}
+.sec-item{background:rgba(255,59,59,.06);border:1px solid rgba(255,59,59,.2);
+  border-radius:4px;padding:5px 7px;margin-bottom:5px;}
+.sec-badge{display:inline-block;background:var(--danger);color:white;font-size:8px;
+  font-weight:700;padding:1px 5px;border-radius:3px;letter-spacing:1px;margin-bottom:2px;}
+
+/* BOTTOM */
+.bottom{grid-row:2;grid-column:1;display:grid;grid-template-columns:270px 1fr;gap:8px;overflow:hidden;}
+.ctrl-panel{background:var(--panel);border:1px solid var(--border);
+  border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:7px;overflow:hidden;}
+.ctrl-lbl{font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:2px;}
+.ctrl-row{display:flex;gap:5px;align-items:center;}
+select,input[type=text],input[type=number]{background:var(--card);border:1px solid var(--border);
+  color:var(--text);font-family:var(--mono);font-size:11px;padding:4px 7px;
+  border-radius:5px;width:100%;outline:none;}
+select:focus,input:focus{border-color:var(--accent);}
+.btn{padding:5px 10px;border:none;border-radius:5px;font-family:var(--display);
+  font-weight:700;font-size:11px;letter-spacing:1px;cursor:pointer;
+  transition:opacity .2s,transform .1s;white-space:nowrap;flex-shrink:0;}
+.btn:hover{opacity:.85;}.btn:active{transform:scale(.97);}
+.btn-start{background:#1b5e20;color:#00e676;}
+.btn-pause{background:#1a2633;color:var(--muted);border:1px solid var(--border);}
+.btn-reset{background:#1a2633;color:var(--muted);border:1px solid var(--border);}
+.btn-kill{background:#5a0a0a;color:var(--danger);}
+.btn-deg{background:#4a2500;color:var(--warn);}
+.btn-rec{background:#0a3a1a;color:var(--healthy);}
+.btn-build{background:#1a2050;color:var(--accent);border:1px solid var(--border);}
+.btn-sec{background:#3a0a0a;color:var(--danger);border:1px solid rgba(255,59,59,.3);font-size:10px;}
+.topo-extra{display:none;}.topo-extra.show{display:block;}
+
+.graph-panel{background:var(--panel);border:1px solid var(--border);
+  border-radius:10px;padding:12px;display:flex;flex-direction:column;overflow:hidden;}
+#pdrChart{flex:1;}
+
+.tooltip{position:fixed;background:rgba(8,24,40,.95);border:1px solid var(--accent);
+  border-radius:6px;padding:8px 12px;font-family:var(--mono);font-size:11px;
+  pointer-events:none;z-index:1000;display:none;color:var(--text);line-height:1.6;}
+.sec-overlay{position:fixed;top:68px;right:18px;background:rgba(255,30,30,.1);
+  border:1px solid var(--danger);border-radius:8px;padding:9px 14px;
+  font-family:var(--mono);font-size:11px;color:var(--danger);z-index:999;
+  max-width:280px;display:none;animation:sli .3s ease;}
+@keyframes sli{from{transform:translateX(18px);opacity:0;}to{transform:translateX(0);opacity:1;}}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo">⬡ SENTINEL<span>MESH &nbsp;—&nbsp; IIoT WSN Security Monitor</span></div>
+  <div class="stat-pills">
+    <div class="stat-pill"><div class="val" id="s-sent">0</div><div class="lbl">Pkts Sent</div></div>
+    <div class="stat-pill"><div class="val" id="s-drop" style="color:var(--danger)">0</div><div class="lbl">Dropped</div></div>
+    <div class="stat-pill"><div class="val" id="s-pdr" style="color:var(--accent2)">100%</div><div class="lbl">PDR</div></div>
+    <div class="stat-pill"><div class="val" id="s-up" style="color:var(--accent2)">00:00</div><div class="lbl">Uptime</div></div>
+    <div class="stat-pill"><div class="val" id="s-sec" style="color:var(--danger)">0</div><div class="lbl">Sec Events</div></div>
+    <div class="stat-pill"><div class="val" id="s-rerr" style="color:var(--warn)">0</div><div class="lbl">RERR</div></div>
+    <div class="stat-pill"><div class="val" id="s-data" style="color:#00ff9d">0</div><div class="lbl">Data Delivered</div></div>
+    <div class="stat-pill"><div class="val" id="s-routes" style="color:var(--accent)">8</div><div class="lbl">Active Routes</div></div>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;margin-left:auto;">
+    <div class="live-badge">● LIVE</div>
+    <div style="font-size:10px;color:var(--muted);font-family:var(--mono)" id="clock">--:--:--</div>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- Network -->
+  <div class="net-panel">
+    <div class="net-lbl">WSN TOPOLOGY</div>
+    <div class="net-sub">Industrial IoT Pipeline Monitoring &nbsp;|&nbsp; Bellman-Ford Routing &nbsp;|&nbsp; HMAC-SHA256 Auth</div>
+    <svg id="net-svg"></svg>
+    <div class="legend">
+      <div class="leg-i"><div class="leg-d" style="background:#37474f"></div>Unknown</div>
+      <div class="leg-i"><div class="leg-d" style="background:#00e676"></div>Healthy</div>
+      <div class="leg-i"><div class="leg-d" style="background:#ffab00"></div>At Risk</div>
+      <div class="leg-i"><div class="leg-d" style="background:#ff3b3b"></div>Failed</div>
+      <div class="leg-i"><div style="width:18px;height:2px;background:#00b0ff;border-radius:1px"></div>Route Update</div>
+      <div class="leg-i"><div style="width:18px;height:2px;background:#00ff9d;border-radius:1px"></div>Data Delivered</div>
+      <div class="leg-i"><div style="width:18px;height:2px;background:#ffd600;border-radius:1px"></div>Reroute</div>
+    </div>
+  </div>
+
+  <!-- Right -->
+  <div class="right-panel">
+    <div class="ml-panel">
+      <div class="panel-title">ML Failure Probability (Random Forest)</div>
+      <div id="ml-bars"></div>
+    </div>
+    <div class="feeds-panel">
+      <div class="feed-tabs">
+        <div class="feed-tab active" onclick="tab('proto')">Protocol Feed</div>
+        <div class="feed-tab" onclick="tab('sec')">🔒 Security Feed</div>
+      </div>
+      <div class="feed-content active" id="tab-proto"></div>
+      <div class="feed-content" id="tab-sec"></div>
+    </div>
+  </div>
+
+  <!-- Bottom -->
+  <div class="bottom">
+    <div class="ctrl-panel">
+      <div class="panel-title">Network Control</div>
+      <div>
+        <div class="ctrl-lbl">Topology</div>
+        <div class="ctrl-row">
+          <select id="topo-sel" onchange="topoChange()">
+            <option value="linear">Linear Pipeline (default)</option>
+            <option value="custom">Custom</option>
+          </select>
+          <button class="btn btn-reset" onclick="resetTopo()">Reset</button>
+        </div>
+        <div class="topo-extra" id="topo-ex">
+          <div class="ctrl-lbl" style="margin-top:4px">Nodes</div>
+          <input type="number" id="t-n" value="5" min="2" max="12">
+          <div class="ctrl-lbl" style="margin-top:3px">Edges (1-2,2-3…)</div>
+          <input type="text" id="t-e" value="1-2,2-3,3-4,4-5">
+          <button class="btn btn-build" style="width:100%;margin-top:4px" onclick="buildTopo()">⚙ Build Network</button>
+        </div>
+      </div>
+      <div>
+        <div class="ctrl-lbl">Simulation</div>
+        <div class="ctrl-row">
+          <button class="btn btn-start" onclick="sim('start')">▶ Start</button>
+          <button class="btn btn-pause" onclick="sim('pause')">⏸ Pause</button>
+        </div>
+      </div>
+      <div>
+        <div class="ctrl-lbl">Fault Injection</div>
+        <select id="fn"><option value="4">Node 4</option></select>
+        <div class="ctrl-row" style="margin-top:4px">
+          <button class="btn btn-kill" onclick="fault('failed')">💀 Kill</button>
+          <button class="btn btn-deg"  onclick="fault('at_risk')">⚠ Degrade</button>
+          <button class="btn btn-rec"  onclick="fault('healthy')">✔ Recover</button>
+        </div>
+        <button class="btn btn-sec" style="width:100%;margin-top:5px" onclick="demoSec()">🔒 Demo: Inject HMAC Attack</button>
+      </div>
+    </div>
+
+    <div class="graph-panel">
+      <div class="panel-title">Packet Delivery Ratio — Live (last 60 samples)</div>
+      <canvas id="pdrChart"></canvas>
+    </div>
+  </div>
+
+</div>
+
+<div class="tooltip" id="tt"></div>
+<div class="sec-overlay" id="sec-ov"></div>
+
+<script>
+const socket = io();
+const nodes = {};
+let topo = null, paused = false;
+const pdrLbls=[], pdrData=[];
+const SC={unknown:"#37474f",healthy:"#00e676",at_risk:"#ffab00",failed:"#ff3b3b"};
+const ROUTE_PATHS={
+  1:[[2,5],[5,7],[7,8]],2:[[1,3],[3,5],[5,7],[7,8]],
+  3:[[1,2],[2,5],[5,7],[7,8]],4:[[2,5],[5,7],[7,8]],
+  5:[[2,4],[4,6],[6,8]],6:[[4,2],[2,5],[5,7],[7,8]],
+  7:[[5,3],[3,1],[1,2]]
+};
+
+// ── D3 ─────────────────────────────────────────────────────────────────────
+const svg=d3.select("#net-svg");
+let gL,gP,gN,gLbl, W=0,H=0;
+const pkts=[];let pid=0;
+
+function lerp(a,b,t){return a+(b-a)*t;}
+
+function initNet(t){
+  topo=t; svg.selectAll("*").remove();
+  const el=document.getElementById("net-svg");
+  W=el.clientWidth; H=el.clientHeight;
+
+  const defs=svg.append("defs");
+  const f=defs.append("filter").attr("id","glow");
+  f.append("feGaussianBlur").attr("stdDeviation","3").attr("result","blur");
+  const m=f.append("feMerge");
+  m.append("feMergeNode").attr("in","blur");
+  m.append("feMergeNode").attr("in","SourceGraphic");
+  defs.append("marker").attr("id","arr").attr("viewBox","0 -5 10 10")
+    .attr("refX",22).attr("refY",0).attr("markerWidth",6).attr("markerHeight",6)
+    .attr("orient","auto").append("path").attr("d","M0,-5L10,0L0,5").attr("fill","#1e88e5");
+
+  gL=svg.append("g"); gP=svg.append("g"); gN=svg.append("g"); gLbl=svg.append("g");
+
+  const pos=t.positions||{};
+  const d3n=t.nodes.map(id=>({
+    id, fx:pos[id]?pos[id][0]/100*W:null, fy:pos[id]?pos[id][1]/100*H:null,
+    x:pos[id]?pos[id][0]/100*W:Math.random()*W,
+    y:pos[id]?pos[id][1]/100*H:Math.random()*H
+  }));
+  const byId=Object.fromEntries(d3n.map(n=>[n.id,n]));
+  const d3l=t.edges.map(([s,tt,c])=>({s,t:tt,c}));
+
+  // Links
+  const lg=gL.selectAll("g").data(d3l).enter().append("g").attr("class",d=>`lk lk-${d.s}-${d.t}`);
+  lg.append("line").attr("class","lg").attr("stroke","rgba(30,136,229,.15)").attr("stroke-width",10);
+  lg.append("line").attr("class","lm").attr("stroke","#1e88e5").attr("stroke-width",2).attr("marker-end","url(#arr)");
+  lg.append("text").attr("text-anchor","middle").attr("font-size","9px")
+    .attr("font-family","'JetBrains Mono',monospace").attr("fill","#4a7a96").text(d=>`c${d.c}`);
+
+  d3l.forEach(l=>{
+    const s=byId[l.s],t2=byId[l.t]; if(!s||!t2)return;
+    d3.selectAll(`.lk-${l.s}-${l.t},.lk-${l.t}-${l.s}`)
+      .selectAll("line").attr("x1",s.x).attr("y1",s.y).attr("x2",t2.x).attr("y2",t2.y);
+    d3.selectAll(`.lk-${l.s}-${l.t},.lk-${l.t}-${l.s}`)
+      .selectAll("text").attr("x",(s.x+t2.x)/2).attr("y",(s.y+t2.y)/2-6);
+  });
+
+  // Nodes
+  const ng=gN.selectAll("g").data(d3n).enter().append("g")
+    .attr("class",d=>`nd nd-${d.id}`).style("cursor","pointer")
+    .on("mouseenter",(e,d)=>showTT(e,d)).on("mouseleave",hideTT);
+  ng.append("circle").attr("class","ng").attr("r",26).attr("fill","rgba(0,212,255,.06)");
+  ng.append("circle").attr("r",18).attr("fill","#37474f")
+    .attr("stroke","#546e7a").attr("stroke-width",1.5).attr("filter","url(#glow)");
+  d3n.forEach(n=>{
+    d3.selectAll(`.nd-${n.id}`).attr("transform",`translate(${n.x},${n.y})`);
+  });
+
+  // Labels (separate group, same position)
+  const lb=gLbl.selectAll("g").data(d3n).enter().append("g").attr("class",d=>`lb-${d.id}`);
+  lb.append("text").attr("text-anchor","middle").attr("dy","0.35em")
+    .attr("font-size","12px").attr("font-weight","700")
+    .attr("font-family","'Rajdhani',sans-serif").attr("fill","white")
+    .attr("pointer-events","none").text(d=>d.id===t.sink?"SINK":`N${d.id}`);
+  d3n.forEach(n=>{
+    d3.selectAll(`.lb-${n.id}`).attr("transform",`translate(${n.x},${n.y})`);
+  });
+
+  window._np=Object.fromEntries(d3n.map(n=>[n.id,{x:n.x,y:n.y}]));
+  window._dl=d3l;
+  window._nids=t.nodes;
+  buildMLBars(t.nodes,t.sink);
+  buildFN(t.nodes);
+  pkts.length=0;
+}
+
+function updNodeVis(nid,status){
+  const c=SC[status]||"#37474f";
+  d3.selectAll(`.nd-${nid} circle:not(.ng)`)
+    .attr("fill",c).attr("stroke",c=="#37474f"?"#546e7a":c);
+  d3.selectAll(`.nd-${nid} .ng`)
+    .attr("fill",c.replace("#","rgba(").replace(/(..)(..)(..)$/,(_,r,g,b)=>
+      `${parseInt(r,16)},${parseInt(g,16)},${parseInt(b,16)},.1)`));
+  if(window._dl){
+    window._dl.forEach(l=>{
+      const s=l.s,t2=l.t;
+      const ns=nodes[s]||{},nt=nodes[t2]||{};
+      const cls=`.lk-${s}-${t2},.lk-${t2}-${s}`;
+      if(ns.status==="failed"||nt.status==="failed"){
+        d3.selectAll(cls+" .lm").attr("stroke","#c62828").attr("stroke-dasharray","6,3");
+      } else if(ns.status==="at_risk"||nt.status==="at_risk"){
+        d3.selectAll(cls+" .lm").attr("stroke","#ffab00").attr("stroke-dasharray","5,3");
+      } else {
+        d3.selectAll(cls+" .lm").attr("stroke","#1e88e5").attr("stroke-dasharray","none");
+        d3.selectAll(cls+" .lg").attr("stroke","rgba(30,136,229,.15)");
+      }
+    });
+  }
+}
+
+function hilightPath(edges){
+  if(!edges)return;
+  edges.forEach(([s,t2])=>{
+    const cls=`.lk-${s}-${t2},.lk-${t2}-${s}`;
+    d3.selectAll(cls+" .lm").attr("stroke","#ffd600").attr("stroke-width",3).attr("stroke-dasharray","none");
+    d3.selectAll(cls+" .lg").attr("stroke","rgba(255,214,0,.3)").attr("stroke-width",14);
+    setTimeout(()=>{
+      d3.selectAll(cls+" .lm").attr("stroke","#1e88e5").attr("stroke-width",2);
+      d3.selectAll(cls+" .lg").attr("stroke","rgba(30,136,229,.15)").attr("stroke-width",10);
+    },5000);
+  });
+}
+
+// Packet animation
+function animPkts(){
+  const tick=()=>{
+    if(!window._dl||!window._np){requestAnimationFrame(tick);return;}
+    if(!paused){
+      const av=new Set(Object.entries(nodes).filter(([,v])=>v.status==="failed"||v.status==="at_risk").map(([k])=>+k));
+      const safe=window._dl.filter(l=>!av.has(l.s)&&!av.has(l.t));
+      if(pkts.length<45&&safe.length&&Math.random()<.04){
+        const l=safe[Math.floor(Math.random()*safe.length)];
+        const sp=window._np[l.s],tp=window._np[l.t];
+        if(sp&&tp)pkts.push({id:pid++,s:l.s,t:l.t,sx:sp.x,sy:sp.y,tx:tp.x,ty:tp.y,p:0,sp:.008+Math.random()*.007});
+      }
+      for(let i=pkts.length-1;i>=0;i--){
+        pkts[i].p+=pkts[i].sp;
+        if(pkts[i].p>=1){pkts.splice(i,1);continue;}
+        pkts[i].cx=lerp(pkts[i].sx,pkts[i].tx,pkts[i].p);
+        pkts[i].cy=lerp(pkts[i].sy,pkts[i].ty,pkts[i].p);
+      }
+      const c=gP.selectAll("circle").data(pkts,d=>d.id);
+      c.enter().append("circle").attr("r",4).attr("fill","#80deea").attr("filter","url(#glow)");
+      c.attr("cx",d=>d.cx).attr("cy",d=>d.cy);
+      c.exit().remove();
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+// Tooltip
+function showTT(e,d){
+  const n=nodes[d.id]||{};
+  const tt=document.getElementById("tt");
+  tt.innerHTML=`<b style="color:var(--accent)">Node ${d.id}${d.id===(topo&&topo.sink)?" (SINK)":""}</b><br>
+    Status: <span style="color:${SC[n.status||'unknown']}">${(n.status||"unknown").toUpperCase()}</span><br>
+    Battery: ${n.battery??100}% &nbsp; Loss: ${n.loss??0}%<br>
+    Failure Prob: <span style="color:${(n.prob||0)>.75?'var(--danger)':'var(--healthy)'}">${((n.prob||0)*100).toFixed(0)}%</span><br>
+    <span style="color:var(--muted);font-size:9px">Protocol: Bellman-Ford | Auth: HMAC-SHA256</span>`;
+  tt.style.display="block";
+  tt.style.left=(e.clientX+14)+"px";
+  tt.style.top=(e.clientY-10)+"px";
+}
+function hideTT(){document.getElementById("tt").style.display="none";}
+
+// ML bars
+function buildMLBars(nids,sink){
+  const c=document.getElementById("ml-bars");
+  c.innerHTML=nids.map(id=>`
+    <div class="ml-row">
+      <div class="ml-lbl">${id===sink?"SK":`N${id}`}</div>
+      <div class="ml-bg"><div class="ml-fill" id="mf-${id}" style="width:0%"></div></div>
+      <div class="ml-pct" id="mp-${id}">0.00</div>
+    </div>`).join("");
+}
+function updML(nid,prob){
+  const f=document.getElementById(`mf-${nid}`),p=document.getElementById(`mp-${nid}`);
+  if(!f||!p)return;
+  f.style.width=(Math.min(100,prob*100)).toFixed(0)+"%";
+  p.textContent=prob.toFixed(2);
+  f.className="ml-fill"+(prob>.75?" crit":prob>.4?" warn":"");
+  p.style.color=prob>.75?"var(--danger)":prob>.4?"var(--warn)":"var(--text)";
+}
+
+// Feeds
+let dataDeliveredCount = 0;
+let routeEventCount = 0;
+function tab(t){
+  document.querySelectorAll(".feed-tab").forEach((el,i)=>el.classList.toggle("active",(i===0&&t==="proto")||(i===1&&t==="sec")));
+  document.getElementById("tab-proto").classList.toggle("active",t==="proto");
+  document.getElementById("tab-sec").classList.toggle("active",t==="sec");
+}
+function addProto(item){
+  const el=document.getElementById("tab-proto");
+  const d=document.createElement("div");
+  d.className="feed-item";
+  const color = item.color || (item.type==="ROUTE"?"#00b0ff":item.type==="DATA"||item.type==="DATA_DELIVERED"?"#00ff9d":item.type==="RISK"?"#ffd600":"var(--accent)");
+  d.innerHTML=`<span class="feed-ts">${item.ts}</span>
+    <span class="feed-type" style="color:${color}">${item.type}</span>
+    <span class="feed-detail">${item.detail}</span>`;
+  el.insertBefore(d,el.firstChild);
+  while(el.children.length>70)el.removeChild(el.lastChild);
+
+  if(item.type==="DATA"||item.type==="DATA_DELIVERED"){
+    dataDeliveredCount += 1;
+    document.getElementById("s-data").textContent = dataDeliveredCount;
+  }
+  if(item.type==="ROUTE"){
+    routeEventCount += 1;
+  }
+}
+function addSec(item){
+  const el=document.getElementById("tab-sec");
+  const d=document.createElement("div");
+  d.className="sec-item";
+  d.innerHTML=`<div><span class="sec-badge">⚠ SECURITY</span></div>
+    <div class="feed-item" style="border:none;padding:0">
+      <span class="feed-ts">${item.ts}</span>
+      <span class="feed-type" style="color:var(--danger)">${item.type}</span>
+      <span class="feed-detail" style="color:#ffaaaa">${item.detail}</span>
+    </div>`;
+  el.insertBefore(d,el.firstChild);
+  while(el.children.length>30)el.removeChild(el.lastChild);
+  const ov=document.getElementById("sec-ov");
+  ov.style.display="block";
+  ov.innerHTML=`🔒 SECURITY ALERT<br><span style="color:var(--text);font-size:10px">${item.detail}</span>`;
+  clearTimeout(window._st);
+  window._st=setTimeout(()=>ov.style.display="none",4000);
+}
+
+// PDR chart
+const ctx=document.getElementById("pdrChart").getContext("2d");
+const chart=new Chart(ctx,{type:"line",data:{labels:pdrLbls,datasets:[{
+  label:"PDR %",data:pdrData,borderColor:"#00ff9f",
+  backgroundColor:"rgba(0,255,159,.07)",borderWidth:2,fill:true,
+  tension:.4,pointRadius:2,pointBackgroundColor:"#00ff9f"
+}]},options:{responsive:true,maintainAspectRatio:false,animation:{duration:300},
+  scales:{
+    x:{ticks:{color:"#4a7a96",font:{size:9,family:"'JetBrains Mono',monospace"},maxTicksLimit:8},grid:{color:"rgba(14,58,90,.5)"}},
+    y:{min:0,max:100,ticks:{color:"#4a7a96",font:{size:9},callback:v=>v+"%"},grid:{color:"rgba(14,58,90,.5)"}}
+  },plugins:{legend:{display:false}}}});
+
+function addPDR(t,pdr){
+  pdrLbls.push(t);pdrData.push(pdr);
+  if(pdrLbls.length>40){pdrLbls.shift();pdrData.shift();}
+  chart.update("none");
+}
+
+// Stats
+function updStats(s){
+  document.getElementById("s-sent").textContent=s.packets_sent||0;
+  document.getElementById("s-drop").textContent=s.packets_dropped||0;
+  document.getElementById("s-sec").textContent=s.security_events||0;
+  document.getElementById("s-rerr").textContent=s.rerr_count||0;
+  const sent=Math.max(1,s.packets_sent||1),drop=s.packets_dropped||0;
+  document.getElementById("s-pdr").textContent=Math.max(0,((sent-drop)/sent*100)).toFixed(1)+"%";
+  const active=Object.values(nodes).filter(n=>n.status!=="failed").length;
+  document.getElementById("s-routes").textContent=active||"—";
+}
+
+// Controls
+function topoChange(){
+  document.getElementById("topo-ex").classList.toggle("show",document.getElementById("topo-sel").value==="custom");
+}
+function resetTopo(){fetch("/api/topology/reset",{method:"POST"});}
+function buildTopo(){
+  const n=+document.getElementById("t-n").value;
+  const edges=document.getElementById("t-e").value.split(",").map(p=>{const[a,b]=p.trim().split("-");return[+a,+b,1];});
+  fetch("/api/topology",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({nodes:n,edges})}).then(r=>r.json()).then(d=>{if(!d.ok)alert("Error: "+d.error);});
+}
+function sim(a){paused=(a==="pause");}
+function buildFN(nids){
+  const s=document.getElementById("fn");
+  s.innerHTML=nids.map(id=>`<option value="${id}">Node ${id}</option>`).join("");
+  s.value=4;
+}
+function fault(action){
+  const nid=+document.getElementById("fn").value;
+  let bat=0,loss=100;
+  if(action==="healthy"){bat=100;loss=0;}else if(action==="at_risk"){bat=30;loss=70;}
+  socket.emit("inject_fault",{node:nid,action,battery:bat,loss});
+  addProto({ts:new Date().toLocaleTimeString("en",{hour12:false}),
+    type:action==="failed"?"NODE_KILL":action==="at_risk"?"DEGRADE":"RECOVER",
+    detail:`Manual ${action} → Node ${nid}`,
+    color:action==="failed"?"#ff3b3b":action==="at_risk"?"#ffab00":"#00e676"});
+}
+function demoSec(){
+  const nid=+document.getElementById("fn").value;
+  fetch("/api/demo/security",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({type:"HMAC Rejection",node:nid})});
+  tab("sec");
+}
+
+// Socket
+socket.on("init_state",data=>{
+  initNet(data.topology);
+  animPkts();
+  Object.entries(data.nodes||{}).forEach(([id,n])=>{nodes[+id]=n;updNodeVis(+id,n.status);updML(+id,n.prob||0);});
+  updStats(data.stats||{});
+  (data.proto_feed||[]).reverse().forEach(addProto);
+  (data.sec_feed||[]).reverse().forEach(addSec);
+  (data.pdr_history||[]).forEach(p=>addPDR(p.t,p.pdr));
+});
+socket.on("node_update",data=>{
+  nodes[data.node_id]={status:data.status,battery:data.battery,loss:data.loss,prob:data.prob};
+  updNodeVis(data.node_id,data.status);
+  updML(data.node_id,data.prob||0);
+  if(data.status==="at_risk"||data.status==="failed")hilightPath(ROUTE_PATHS[data.node_id]);
+});
+socket.on("proto_event",addProto);
+socket.on("security_event",addSec);
+socket.on("stats_update",updStats);
+socket.on("pdr_update",p=>addPDR(p.t,p.pdr));
+socket.on("topology_changed",t=>{initNet(t);animPkts();});
+socket.on("uptime",d=>{
+  const s=d.seconds,m=Math.floor(s/60),h=Math.floor(m/60);
+  document.getElementById("s-up").textContent=h>0?`${h}h${String(m%60).padStart(2,"0")}m`:`${String(m).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
+});
+
+// Clock
+setInterval(()=>{document.getElementById("clock").textContent=new Date().toLocaleTimeString("en",{hour12:false});},1000);
+
+// Resize
+window.addEventListener("resize",()=>{if(topo)initNet(topo);});
+</script>
+</body>
+</html>
