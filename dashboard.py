@@ -9,6 +9,8 @@ import socket
 import json
 import threading
 import time
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
 
 # ── Network topology for visualization ───────────────────────────────────────
 EDGES = [

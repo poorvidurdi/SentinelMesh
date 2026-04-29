@@ -4,6 +4,8 @@ import os
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, accuracy_score
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
 
 METRICS_FILE = "data/metrics.csv"
 MODEL_FILE = "model.pkl"

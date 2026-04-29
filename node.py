@@ -6,6 +6,9 @@ import random
 import socket
 import threading
 import time
+import copy
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
 
 from router import get_edge_cost, get_neighbour_ports, get_sink, get_topology, get_next_hop
 
