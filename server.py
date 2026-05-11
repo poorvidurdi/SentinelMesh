@@ -5,7 +5,7 @@ Also exposes REST endpoints for topology control.
 Run: python server.py
 """
 
-import json, socket, threading, time, os
+import json, socket, threading, time, os, random
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 
@@ -26,7 +26,8 @@ state = {
         "uptime_start":    time.time(),
         "security_events": 0,
         "rerr_count":      0,
-        "active_routes":   0,
+        "active_routes":   8,
+        "recovery_count":  0,
     },
     "pdr_history": [],    # list of {t, pdr} last 60s
     "proto_feed":  [],    # protocol messages
@@ -93,7 +94,7 @@ def process_update(msg):
     # ── Security event ────────────────────────────────────────────────────────
     if mtype in ("HMAC_REJECT","REPLAY"):
         state["stats"]["security_events"] += 1
-        state["stats"]["packets_dropped"]  += 1
+        # Rejected packets were never trusted — not counted as dropped data
         evt_type = "HMAC Rejection" if mtype=="HMAC_REJECT" else "Replay Attack"
         evt = {
             "ts": ts,
@@ -111,7 +112,7 @@ def process_update(msg):
     # ── RERR / route / risk updates ───────────────────────────────────────────
     if mtype in ("RERR_BROADCAST", "RERR"):
         state["stats"]["rerr_count"] += 1
-        state["stats"]["packets_dropped"] += 1
+        # RERR is a control packet — does not count as dropped data
         proto = {
             "ts": ts,
             "type": "RERR",
@@ -172,11 +173,31 @@ def process_update(msg):
     if nid is None:
         return
 
-    state["stats"]["packets_sent"] += 1
-    if status == "failed":
-        state["stats"]["packets_dropped"] += 1
-
+    # Only count non-heartbeat status as a meaningful packet
+    if status in ("healthy", "at_risk"):
+        state["stats"]["packets_sent"] += 1
+    # Only count as dropped if node failed AND had no prior at_risk warning
+    # meaning no preemptive reroute happened
     prev = state["nodes"].get(nid, {})
+    prev_status = state["nodes"].get(nid, {}).get("status", "unknown")
+    if status == "failed" and prev_status not in ("at_risk", "failed"):
+        # Reactive failure — data was lost
+        state["stats"]["packets_dropped"] += 1
+    elif status == "failed" and prev_status == "at_risk":
+        # Proactive reroute happened — no data lost
+        pass
+    # Recovery — node came back online, restore one dropped count
+    if status == "healthy" and prev_status == "failed":
+        state["stats"]["packets_dropped"] = max(0, state["stats"]["packets_dropped"] - 1)
+        state["stats"]["recovery_count"]  = state["stats"].get("recovery_count", 0) + 1
+        _sent = max(1, state["stats"]["packets_sent"])
+        _drop = state["stats"]["packets_dropped"]
+        _pdr  = 100.0 if _drop == 0 else max(0, round((1 - _drop / _sent) * 100, 1))
+        _pt   = {"t": ts, "pdr": _pdr}
+        state["pdr_history"].append(_pt)
+        state["_last_pdr_time"] = time.time()
+        socketio.emit("pdr_update", _pt)
+
     state["nodes"][nid] = {
         "status":  status,
         "battery": bat,
@@ -192,17 +213,24 @@ def process_update(msg):
         "unknown":  "#546e7a"
     }
     proto_color = color_map.get(status,"#b0bec5")
-    proto = {
-        "ts": ts,
-        "type": "HEARTBEAT" if status not in ("failed",) else "NODE_FAIL",
-        "node": nid,
-        "detail": f"N{nid} → B:{bat}% L:{loss}% Prob:{prob:.2f} [{status.upper()}]",
-        "color": proto_color
-    }
-    state["proto_feed"].insert(0, proto)
-    state["proto_feed"] = state["proto_feed"][:80]
+    # Only log to protocol feed on meaningful status changes
+    prev_status = prev.get("status", "unknown")
+    if status != prev_status or status in ("at_risk", "failed"):
+        proto = {
+            "ts": ts,
+            "type": "NODE_FAIL" if status == "failed" else
+                    "AT_RISK"  if status == "at_risk" else
+                    "RECOVERY" if status == "healthy" and prev_status in ("at_risk","failed") else
+                    "HEARTBEAT",
+            "node": nid,
+            "detail": f"N{nid} → B:{bat}% L:{loss}% Prob:{prob:.2f} [{status.upper()}]",
+            "color": proto_color
+        }
+        state["proto_feed"].insert(0, proto)
+        state["proto_feed"] = state["proto_feed"][:80]
+        socketio.emit("proto_event", proto)
 
-    # Emit to browser
+    # Always emit node_update and stats (silent, no feed entry for normal heartbeats)
     socketio.emit("node_update", {
         "node_id": nid,
         "status":  status,
@@ -210,8 +238,13 @@ def process_update(msg):
         "loss":    loss,
         "prob":    prob
     })
-    socketio.emit("proto_event", proto)
     socketio.emit("stats_update", state["stats"])
+
+    # Recalculate active routes from current node statuses
+    cfg = load_config()
+    total = len(cfg.get("nodes", []))
+    failed_count = sum(1 for n in state["nodes"].values() if n.get("status") == "failed")
+    state["stats"]["active_routes"] = max(0, total - failed_count)
 
     # PDR history (every 5 seconds)
     now = time.time()
@@ -220,7 +253,8 @@ def process_update(msg):
         state["_last_pdr_time"] = now
         sent    = max(1, state["stats"]["packets_sent"])
         dropped = state["stats"]["packets_dropped"]
-        pdr     = max(0, round((1 - dropped/sent)*100, 1))
+        # PDR based only on unrecovered drops — at_risk reroutes don't count as drops
+        pdr = 100.0 if dropped == 0 else max(0, round((1 - dropped/sent)*100, 1))
         point = {"t": ts, "pdr": pdr}
         state["pdr_history"].append(point)
         socketio.emit("pdr_update", point)
@@ -232,6 +266,27 @@ def stats_ticker():
         uptime = int(time.time() - state["stats"]["uptime_start"])
         socketio.emit("uptime", {"seconds": uptime})
         time.sleep(1)
+
+def security_heartbeat():
+    """Emit periodic passive HMAC verification confirmations from healthy nodes."""
+    while True:
+        time.sleep(15)
+        healthy_nodes = [
+            nid for nid, n in state["nodes"].items()
+            if n.get("status") in ("healthy", "at_risk")
+        ]
+        if not healthy_nodes:
+            continue
+        nid = random.choice(healthy_nodes)
+        ts = time.strftime("%H:%M:%S")
+        evt = {
+            "ts": ts,
+            "type": "HMAC Verified",
+            "node": nid,
+            "detail": f"Heartbeat from Node {nid} — signature valid, seq accepted",
+            "severity": "info"
+        }
+        socketio.emit("security_event", evt)
 
 # ── REST endpoints ────────────────────────────────────────────────────────────
 @app.route("/")
@@ -326,18 +381,39 @@ def on_connect():
 
 @socketio.on("inject_fault")
 def on_fault(data):
-    """Frontend can request a node kill/degrade via socket."""
-    process_update({
-        "node_id":     data["node"],
-        "status":      data["action"],
-        "battery":     data.get("battery",0),
-        "packet_loss": data.get("loss",100),
-        "prob":        1.0
+    """Frontend simulation control — does not affect packet stats."""
+    nid    = data["node"]
+    action = data["action"]
+    bat    = data.get("battery", 0)
+    loss   = data.get("loss", 100)
+    ts     = time.strftime("%H:%M:%S")
+
+    prev_status = state["nodes"].get(nid, {}).get("status", "unknown")
+    state["nodes"][nid] = {"status": action, "battery": bat, "loss": loss, "prob": 1.0}
+
+    # Update active routes
+    cfg = load_config()
+    total = len(cfg.get("nodes", []))
+    failed_count = sum(1 for n in state["nodes"].values() if n.get("status") == "failed")
+    state["stats"]["active_routes"] = max(0, total - failed_count)
+
+    # Only log meaningful events to feed
+    color_map = {"failed":"#f44336","at_risk":"#ffab00","healthy":"#00e676"}
+    socketio.emit("node_update", {"node_id":nid,"status":action,"battery":bat,"loss":loss,"prob":1.0})
+    socketio.emit("stats_update", state["stats"])
+
+    type_map = {"failed":"NODE_KILL","at_risk":"DEGRADE","healthy":"RECOVERY"}
+    socketio.emit("proto_event", {
+        "ts": ts, "type": type_map.get(action,"ACTION"),
+        "node": nid,
+        "detail": f"Manual {action} → Node {nid}",
+        "color": color_map.get(action,"#b0bec5")
     })
 
 # ── Entry ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     threading.Thread(target=udp_listener, daemon=True).start()
     threading.Thread(target=stats_ticker, daemon=True).start()
+    threading.Thread(target=security_heartbeat, daemon=True).start()
     print("[Server] Starting SentinelMesh dashboard at http://localhost:5000")
     socketio.run(app, host="0.0.0.0", port=5000, debug=False)

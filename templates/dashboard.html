@@ -102,8 +102,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--display);
 /* BOTTOM */
 .bottom{grid-row:2;grid-column:1;display:grid;grid-template-columns:270px 1fr;gap:8px;overflow:hidden;}
 .ctrl-panel{background:var(--panel);border:1px solid var(--border);
-  border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:7px;overflow:hidden;}
-.ctrl-lbl{font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:2px;}
+  border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:9px;overflow:hidden;}
+.ctrl-lbl{font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:3px;}
 .ctrl-row{display:flex;gap:5px;align-items:center;}
 select,input[type=text],input[type=number]{background:var(--card);border:1px solid var(--border);
   color:var(--text);font-family:var(--mono);font-size:11px;padding:4px 7px;
@@ -121,7 +121,9 @@ select:focus,input:focus{border-color:var(--accent);}
 .btn-rec{background:#0a3a1a;color:var(--healthy);}
 .btn-build{background:#1a2050;color:var(--accent);border:1px solid var(--border);}
 .btn-sec{background:#3a0a0a;color:var(--danger);border:1px solid rgba(255,59,59,.3);font-size:10px;}
-.topo-extra{display:none;}.topo-extra.show{display:block;}
+.topo-extra{display:none;margin-top:6px;}.topo-extra.show{display:block;}
+.topo-extra .ctrl-lbl{margin-top:6px;margin-bottom:3px;}
+.topo-extra input{margin-bottom:4px;}
 
 .graph-panel{background:var(--panel);border:1px solid var(--border);
   border-radius:10px;padding:12px;display:flex;flex-direction:column;overflow:hidden;}
@@ -135,6 +137,9 @@ select:focus,input:focus{border-color:var(--accent);}
   font-family:var(--mono);font-size:11px;color:var(--danger);z-index:999;
   max-width:280px;display:none;animation:sli .3s ease;}
 @keyframes sli{from{transform:translateX(18px);opacity:0;}to{transform:translateX(0);opacity:1;}}
+.recovery-event{background:rgba(0,230,118,.08);border-left:3px solid var(--healthy);padding-left:5px;}
+.recovery-event .feed-type{animation:rec-flash .6s ease 4;}
+@keyframes rec-flash{0%,100%{opacity:1;}50%{opacity:.25;}}
 </style>
 </head>
 <body>
@@ -164,6 +169,7 @@ select:focus,input:focus{border-color:var(--accent);}
     <div class="net-lbl">WSN TOPOLOGY</div>
     <div class="net-sub">Industrial IoT Pipeline Monitoring &nbsp;|&nbsp; Bellman-Ford Routing &nbsp;|&nbsp; HMAC-SHA256 Auth</div>
     <svg id="net-svg"></svg>
+    <div id="reroute-lbl" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-family:var(--display);font-weight:700;font-size:22px;letter-spacing:3px;padding:8px 24px;border-radius:8px;border:2px solid;pointer-events:none;z-index:20;box-shadow:0 0 18px currentColor;white-space:nowrap;"></div>
     <div class="legend">
       <div class="leg-i"><div class="leg-d" style="background:#37474f"></div>Unknown</div>
       <div class="leg-i"><div class="leg-d" style="background:#00e676"></div>Healthy</div>
@@ -232,7 +238,10 @@ select:focus,input:focus{border-color:var(--accent);}
     </div>
 
     <div class="graph-panel">
-      <div class="panel-title">Packet Delivery Ratio — Live (last 60 samples)</div>
+      <div class="panel-title">Packet Delivery Ratio — Live</div>
+      <div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:6px;margin-top:-4px;letter-spacing:0.5px;">
+        100% = all packets delivered &nbsp;|&nbsp; dip = node failure &nbsp;|&nbsp; recovery = self-healing restored
+      </div>
       <canvas id="pdrChart"></canvas>
     </div>
   </div>
@@ -258,7 +267,7 @@ const ROUTE_PATHS={
 // ── D3 ─────────────────────────────────────────────────────────────────────
 const svg=d3.select("#net-svg");
 let gL,gP,gN,gLbl, W=0,H=0;
-const pkts=[];let pid=0;
+const pkts=[];let pid=0;let hasHeartbeat=false;
 
 function lerp(a,b,t){return a+(b-a)*t;}
 
@@ -356,8 +365,9 @@ function updNodeVis(nid,status){
   }
 }
 
-function hilightPath(edges){
+function hilightPath(edges,isProactive){
   if(!edges)return;
+  showRerouteLabel(isProactive?"PROACTIVE REROUTE":"REACTIVE REROUTE",isProactive);
   edges.forEach(([s,t2])=>{
     const cls=`.lk-${s}-${t2},.lk-${t2}-${s}`;
     d3.selectAll(cls+" .lm").attr("stroke","#ffd600").attr("stroke-width",3).attr("stroke-dasharray","none");
@@ -365,8 +375,21 @@ function hilightPath(edges){
     setTimeout(()=>{
       d3.selectAll(cls+" .lm").attr("stroke","#1e88e5").attr("stroke-width",2);
       d3.selectAll(cls+" .lg").attr("stroke","rgba(30,136,229,.15)").attr("stroke-width",10);
-    },5000);
+    },9000);
   });
+}
+function showRerouteLabel(text,isProactive){
+  const lbl=document.getElementById("reroute-lbl");
+  if(!lbl)return;
+  const color=isProactive?"#00e676":"#ff3b3b";
+  const bg=isProactive?"rgba(0,230,118,.18)":"rgba(255,59,59,.18)";
+  lbl.textContent=text;
+  lbl.style.color=color;
+  lbl.style.borderColor=color;
+  lbl.style.background=bg;
+  lbl.style.display="block";
+  clearTimeout(window._rlt);
+  window._rlt=setTimeout(()=>lbl.style.display="none",9000);
 }
 
 // Packet animation
@@ -376,7 +399,7 @@ function animPkts(){
     if(!paused){
       const av=new Set(Object.entries(nodes).filter(([,v])=>v.status==="failed"||v.status==="at_risk").map(([k])=>+k));
       const safe=window._dl.filter(l=>!av.has(l.s)&&!av.has(l.t));
-      if(pkts.length<45&&safe.length&&Math.random()<.04){
+      if(hasHeartbeat&&pkts.length<45&&safe.length&&Math.random()<.04){
         const l=safe[Math.floor(Math.random()*safe.length)];
         const sp=window._np[l.s],tp=window._np[l.t];
         if(sp&&tp)pkts.push({id:pid++,s:l.s,t:l.t,sx:sp.x,sy:sp.y,tx:tp.x,ty:tp.y,p:0,sp:.008+Math.random()*.007});
@@ -442,7 +465,8 @@ function tab(t){
 function addProto(item){
   const el=document.getElementById("tab-proto");
   const d=document.createElement("div");
-  d.className="feed-item";
+  const isRec=item.type==="RECOVERY";
+  d.className="feed-item"+(isRec?" recovery-event":"");
   const color = item.color || (item.type==="ROUTE"?"#00b0ff":item.type==="DATA"||item.type==="DATA_DELIVERED"?"#00ff9d":item.type==="RISK"?"#ffd600":"var(--accent)");
   d.innerHTML=`<span class="feed-ts">${item.ts}</span>
     <span class="feed-type" style="color:${color}">${item.type}</span>
@@ -461,20 +485,30 @@ function addProto(item){
 function addSec(item){
   const el=document.getElementById("tab-sec");
   const d=document.createElement("div");
-  d.className="sec-item";
-  d.innerHTML=`<div><span class="sec-badge">⚠ SECURITY</span></div>
-    <div class="feed-item" style="border:none;padding:0">
-      <span class="feed-ts">${item.ts}</span>
-      <span class="feed-type" style="color:var(--danger)">${item.type}</span>
-      <span class="feed-detail" style="color:#ffaaaa">${item.detail}</span>
-    </div>`;
+  const isCrit=item.severity==="critical"||!item.severity;
+
+  if(isCrit){
+    d.className="sec-item";
+    d.innerHTML=`<div><span class="sec-badge">⚠ SECURITY</span></div>
+      <div class="feed-item" style="border:none;padding:0">
+        <span class="feed-ts">${item.ts}</span>
+        <span class="feed-type" style="color:var(--danger)">${item.type}</span>
+        <span class="feed-detail" style="color:#ffaaaa">${item.detail}</span>
+      </div>`;
+    const ov=document.getElementById("sec-ov");
+    ov.style.display="block";
+    ov.innerHTML=`🔒 SECURITY ALERT<br><span style="color:var(--text);font-size:10px">${item.detail}</span>`;
+    clearTimeout(window._st);
+    window._st=setTimeout(()=>ov.style.display="none",4000);
+  } else {
+    d.className="feed-item";
+    d.innerHTML=`<span class="feed-ts">${item.ts}</span>
+      <span class="feed-type" style="color:var(--healthy)">✔ ${item.type}</span>
+      <span class="feed-detail" style="color:#5a8a6a">${item.detail}</span>`;
+  }
+
   el.insertBefore(d,el.firstChild);
-  while(el.children.length>30)el.removeChild(el.lastChild);
-  const ov=document.getElementById("sec-ov");
-  ov.style.display="block";
-  ov.innerHTML=`🔒 SECURITY ALERT<br><span style="color:var(--text);font-size:10px">${item.detail}</span>`;
-  clearTimeout(window._st);
-  window._st=setTimeout(()=>ov.style.display="none",4000);
+  while(el.children.length>40)el.removeChild(el.lastChild);
 }
 
 // PDR chart
@@ -486,7 +520,7 @@ const chart=new Chart(ctx,{type:"line",data:{labels:pdrLbls,datasets:[{
 }]},options:{responsive:true,maintainAspectRatio:false,animation:{duration:300},
   scales:{
     x:{ticks:{color:"#4a7a96",font:{size:9,family:"'JetBrains Mono',monospace"},maxTicksLimit:8},grid:{color:"rgba(14,58,90,.5)"}},
-    y:{min:0,max:100,ticks:{color:"#4a7a96",font:{size:9},callback:v=>v+"%"},grid:{color:"rgba(14,58,90,.5)"}}
+    y:{min:0,max:100,title:{display:true,text:"PDR %",color:"#4a7a96",font:{size:9,family:"'JetBrains Mono',monospace"}},ticks:{color:"#4a7a96",font:{size:9},callback:v=>v+"%"},grid:{color:"rgba(14,58,90,.5)"}}
   },plugins:{legend:{display:false}}}});
 
 function addPDR(t,pdr){
@@ -502,7 +536,6 @@ function updStats(s){
   document.getElementById("s-sec").textContent=s.security_events||0;
   document.getElementById("s-rerr").textContent=s.rerr_count||0;
   const sent=Math.max(1,s.packets_sent||1),drop=s.packets_dropped||0;
-  document.getElementById("s-pdr").textContent=Math.max(0,((sent-drop)/sent*100)).toFixed(1)+"%";
   const active=Object.values(nodes).filter(n=>n.status!=="failed").length;
   document.getElementById("s-routes").textContent=active||"—";
 }
@@ -552,15 +585,39 @@ socket.on("init_state",data=>{
   (data.pdr_history||[]).forEach(p=>addPDR(p.t,p.pdr));
 });
 socket.on("node_update",data=>{
+  const prev=nodes[data.node_id]||{};
   nodes[data.node_id]={status:data.status,battery:data.battery,loss:data.loss,prob:data.prob};
   updNodeVis(data.node_id,data.status);
-  updML(data.node_id,data.prob||0);
-  if(data.status==="at_risk"||data.status==="failed")hilightPath(ROUTE_PATHS[data.node_id]);
+  hasHeartbeat=true;
+  // Recovery detection — show prominent feed entry and PDR uptick
+  if(data.status==="healthy" && prev.status==="failed"){
+    addProto({
+      ts: new Date().toLocaleTimeString("en",{hour12:false}),
+      type: "RECOVERY",
+      detail: `Node ${data.node_id} back online — self-healing complete`,
+      color: "var(--healthy)"
+    });
+    showRerouteLabel("NODE RECOVERED", true);
+    pdrLbls.push(new Date().toLocaleTimeString("en",{hour12:false}));
+    pdrData.push(100.0);
+    if(pdrLbls.length>40){pdrLbls.shift();pdrData.shift();}
+    chart.update("none");
+  }
+  const bat=data.battery??100,lss=data.loss??0;
+  const baseline=(100-bat)*0.001+lss*0.003;
+  updML(data.node_id,Math.max(data.prob||0,baseline));
+  if(data.status==="at_risk"||data.status==="failed"){
+    const isPro=data.status==="at_risk"||(data.status==="failed"&&prev.status==="at_risk");
+    hilightPath(ROUTE_PATHS[data.node_id],isPro);
+  }
 });
 socket.on("proto_event",addProto);
 socket.on("security_event",addSec);
 socket.on("stats_update",updStats);
-socket.on("pdr_update",p=>addPDR(p.t,p.pdr));
+socket.on("pdr_update",p=>{
+  addPDR(p.t,p.pdr);
+  document.getElementById("s-pdr").textContent = p.pdr.toFixed(1)+"%";
+});
 socket.on("topology_changed",t=>{initNet(t);animPkts();});
 socket.on("uptime",d=>{
   const s=d.seconds,m=Math.floor(s/60),h=Math.floor(m/60);

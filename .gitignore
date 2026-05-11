@@ -10,6 +10,12 @@ __pycache__/
 data/
 *.csv
 *.pkl
+model.pkl
+
+# Node / frontend
+node_modules/
+dist/
+.cache/
 
 # Environment variables
 .env
