@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import pickle
 import os
 from sklearn.ensemble import RandomForestClassifier
@@ -34,8 +35,20 @@ def train():
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight="balanced")
-    model.fit(X_train, y_train)
+    # Inject Gaussian noise to smooth the decision boundary
+    np.random.seed(42)
+    X_train_noisy = X_train.copy()
+    X_train_noisy["battery"] += np.random.normal(0, 15, size=len(X_train))
+    X_train_noisy["packet_loss"] += np.random.normal(0, 15, size=len(X_train))
+
+    model = RandomForestClassifier(
+        n_estimators=100, 
+        max_depth=4, 
+        min_samples_leaf=5, 
+        random_state=42, 
+        class_weight="balanced"
+    )
+    model.fit(X_train_noisy, y_train)
 
     y_pred = model.predict(X_test)
     print("[Trainer] ── Model Evaluation ──────────────────────")

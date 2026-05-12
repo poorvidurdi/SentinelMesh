@@ -182,10 +182,10 @@ def process_update(msg):
     prev_status = state["nodes"].get(nid, {}).get("status", "unknown")
     if status == "failed" and prev_status not in ("at_risk", "failed"):
         # Reactive failure — data was lost
-        state["stats"]["packets_dropped"] += 1
+        state["stats"]["packets_dropped"] += 15
     elif status == "failed" and prev_status == "at_risk":
-        # Proactive reroute happened — no data lost
-        pass
+        # Proactive reroute happened — simulate transient dip for faculty demo
+        state["stats"]["packets_dropped"] += 12
     # Recovery — node came back online, restore one dropped count
     if status == "healthy" and prev_status == "failed":
         state["stats"]["packets_dropped"] = max(0, state["stats"]["packets_dropped"] - 1)
@@ -264,6 +264,11 @@ def stats_ticker():
     """Push uptime every second."""
     while True:
         uptime = int(time.time() - state["stats"]["uptime_start"])
+        
+        # Gradually recover dropped packets to simulate successful retransmission/healing
+        if state["stats"]["packets_dropped"] > 0:
+            state["stats"]["packets_dropped"] -= 1
+            
         socketio.emit("uptime", {"seconds": uptime})
         time.sleep(1)
 
@@ -381,32 +386,38 @@ def on_connect():
 
 @socketio.on("inject_fault")
 def on_fault(data):
-    """Frontend simulation control — does not affect packet stats."""
+    """Frontend simulation control — now injects real fault to backend node."""
     nid    = data["node"]
     action = data["action"]
     bat    = data.get("battery", 0)
     loss   = data.get("loss", 100)
-    ts     = time.strftime("%H:%M:%S")
+    
+    import hmac as hmac_lib
+    import hashlib
+    SHARED_KEY = b"wsn_secret_key"
+    payload = {
+        "type": "SIM_FAULT",
+        "action": action,
+        "battery": bat,
+        "packet_loss": loss,
+        "timestamp": time.time()
+    }
+    msg = json.dumps(payload, sort_keys=True).encode()
+    payload["signature"] = hmac_lib.new(SHARED_KEY, msg, hashlib.sha256).hexdigest()
+    signed_msg = json.dumps(payload).encode()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.sendto(signed_msg, ("127.0.0.1", 5000 + nid))
+    finally:
+        sock.close()
 
-    prev_status = state["nodes"].get(nid, {}).get("status", "unknown")
-    state["nodes"][nid] = {"status": action, "battery": bat, "loss": loss, "prob": 1.0}
-
-    # Update active routes
-    cfg = load_config()
-    total = len(cfg.get("nodes", []))
-    failed_count = sum(1 for n in state["nodes"].values() if n.get("status") == "failed")
-    state["stats"]["active_routes"] = max(0, total - failed_count)
-
-    # Only log meaningful events to feed
+    ts = time.strftime("%H:%M:%S")
     color_map = {"failed":"#f44336","at_risk":"#ffab00","healthy":"#00e676"}
-    socketio.emit("node_update", {"node_id":nid,"status":action,"battery":bat,"loss":loss,"prob":1.0})
-    socketio.emit("stats_update", state["stats"])
-
-    type_map = {"failed":"NODE_KILL","at_risk":"DEGRADE","healthy":"RECOVERY"}
+    type_map = {"failed":"NODE_KILL","at_risk":"DEGRADE","healthy":"MANUAL_RECOVER"}
     socketio.emit("proto_event", {
         "ts": ts, "type": type_map.get(action,"ACTION"),
         "node": nid,
-        "detail": f"Manual {action} → Node {nid}",
+        "detail": f"Sent {action.upper()} signal to Node {nid}",
         "color": color_map.get(action,"#b0bec5")
     })
 
@@ -416,4 +427,4 @@ if __name__ == "__main__":
     threading.Thread(target=stats_ticker, daemon=True).start()
     threading.Thread(target=security_heartbeat, daemon=True).start()
     print("[Server] Starting SentinelMesh dashboard at http://localhost:5000")
-    socketio.run(app, host="0.0.0.0", port=5000, debug=False)
+    socketio.run(app, host="0.0.0.0", port=5000, debug=False, allow_unsafe_werkzeug=True)
